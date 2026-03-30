@@ -11,7 +11,6 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from agents import orchestrator
-from memory import session_memory_manager
 
 # FastAPI 是现代、高性能的 Python Web 框架，专门用于快速构建 API 接口，是当下 Python 后端开发的主流选择之一。
 app = FastAPI(title="汽车智能对话系统", version="1.0.0")
@@ -48,7 +47,7 @@ def chat(req: ChatRequest):
     session_id = req.session_id or str(uuid.uuid4())
     user_id = req.user_id or str(uuid.uuid4())
     try:
-        answer = orchestrator.run(session_id=session_id, query=req.query)
+        answer = orchestrator.run(user_id=user_id, session_id=session_id, query=req.query)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Agent 执行失败：{str(e)}")
     return ChatResponse(session_id=session_id, user_id=user_id, answer=answer)
@@ -82,11 +81,11 @@ async def chat_stream(req: ChatRequest):
     )
 
 
-@app.delete("/session/{session_id}")
-def clear_session(session_id: str):
-    """清除指定 session 的对话历史"""
-    session_memory_manager.clear(session_id)
-    return {"message": f"Session {session_id} 已清除"}
+@app.delete("/session/{user_id}/{session_id}")
+def clear_session(user_id: str, session_id: str):
+    """结束会话：摘要写入长期记忆，清除短期记忆"""
+    orchestrator.close_session(user_id, session_id)
+    return {"message": f"Session {user_id}:{session_id} 已清除"}
 
 
 # ----------------------------------------------------------------
@@ -95,4 +94,4 @@ def clear_session(session_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=9000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8500, reload=True)

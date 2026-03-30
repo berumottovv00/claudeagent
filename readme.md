@@ -74,11 +74,62 @@ rag_query  get_weather   get_navigation  navigate      recommend
 
 ## 记忆系统
 
-| 层次 | 实现 | 内容 | 生命周期 |
-|---|---|---|---|
-| 短期记忆 | 内存 deque（按 session_id） | 当前会话对话轮次 | 会话结束清除 |
-| 长期记忆 | Milvus 向量检索（接口预留） | 用户偏好摘要、历史记录 | 跨会话持久化 |
-| 知识库 | Milvus（RAG 微服务侧） | 汽车用户手册分块 | 静态，定期更新 |
+### 整体架构
+
+```
+请求进入
+  │
+  ├─① 读取长期记忆（Redis，按 user_id）
+  │      └─ 拼入 system prompt 作为用户背景上下文
+  │
+  ├─② 读取短期记忆（进程内 deque，按 user_id:session_id）
+  │      └─ 拼入历史对话消息列表
+  │
+  ├─③ Agent 执行（ReAct 循环）
+  │
+  ├─④ 保存本轮到短期记忆
+  │
+  └─⑤ 会话结束时
+         └─ LLM 对短期记忆做摘要压缩 → 追加写入 Redis 长期记忆
+```
+
+### 短期记忆
+
+| 项 | 说明 |
+|---|---|
+| 存储 | 进程内 `deque`（滑动窗口） |
+| Key | `user_id:session_id` |
+| 内容 | 当前会话的 (human, ai) 对话轮次 |
+| 窗口大小 | 默认保留最近 10 轮，可配置 |
+| 生命周期 | 调用 `DELETE /session/{user_id}/{session_id}` 或进程重启时清除 |
+
+### 长期记忆
+
+| 项 | 说明 |
+|---|---|
+| 存储 | Redis（Hash + List 结构） |
+| Key | `ltm:{user_id}` |
+| 内容 | 用户偏好摘要、历史会话摘要列表 |
+| 写入时机 | 会话结束时，由 LLM 对短期记忆压缩摘要后追加写入 |
+| 读取时机 | 每次对话开始前拉取，拼入 system prompt |
+| TTL | 默认 30 天，可配置 |
+| 生命周期 | 跨会话、跨进程持久化 |
+
+### Redis 数据结构
+
+```
+ltm:{user_id}
+  ├── preferences  (String) 用户偏好摘要，每次会话后覆盖更新
+  └── summaries    (List)   历史会话摘要列表，每次会话后 LPUSH，保留最近 N 条
+```
+
+### 分层对比
+
+| 层次 | 实现 | Key | 写入 | 清除 | 持久化 |
+|---|---|---|---|---|---|
+| 短期记忆 | 进程内 deque | `user_id:session_id` | 每轮对话后 | 会话结束 / 重启 | 否 |
+| 长期记忆 | Redis | `ltm:{user_id}` | 会话结束摘要压缩后 | TTL 到期 | 是 |
+| 知识库 | Milvus（RAG 微服务侧） | — | 离线导入 | 手动 | 是 |
 
 ---
 
@@ -91,6 +142,7 @@ rag_query  get_weather   get_navigation  navigate      recommend
 | 工具协议 | MCP（天气、地图，接口预留） |
 | 向量数据库 | Milvus |
 | 服务框架 | FastAPI + SSE 流式响应 |
+| 长期记忆 | Redis（会话摘要 + 用户偏好，TTL 30天） |
 
 ---
 
@@ -103,7 +155,8 @@ rag_query  get_weather   get_navigation  navigate      recommend
 ├── config/
 │   └── settings.py                  # LLM / RAG / MCP 配置
 ├── memory/
-│   └── conversation_memory.py       # 多 session 滑动窗口记忆管理
+│   ├── conversation_memory.py       # 短期记忆：多 session 滑动窗口（进程内 deque）
+│   └── long_term_memory.py          # 长期记忆：Redis 会话摘要 + 用户偏好持久化
 ├── agents/
 │   ├── orchestrator_agent.py        # 主控 ReAct Agent
 │   ├── reject_agent.py              # 拒识 Agent（接口预留）
@@ -129,7 +182,7 @@ pip install -r requirements.txt
 
 # 2. 配置环境变量
 cp .env.example .env
-# 编辑 .env，填入 ARK_API_KEY
+# 编辑 .env，填入 ARK_API_KEY、REDIS_URL 等
 
 # 3. 启动服务
 python main.py

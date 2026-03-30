@@ -71,7 +71,7 @@ def test_chat_multi_turn():
 
 def test_chat_stream():
     """解析 SSE 各帧，验证首帧包含 session_id / user_id，最终有 final_answer"""
-    payload = {"query": "哦", "session_id": SESSION_ID, "user_id": USER_ID}
+    payload = {"query": "今天上海天气怎么样", "session_id": SESSION_ID, "user_id": USER_ID}
 
     with client.stream("POST", "/chat/stream", json=payload) as resp:
         assert resp.status_code == 200
@@ -112,6 +112,6 @@ def test_chat_stream_auto_ids():
 # ----------------------------------------------------------------
 
 def test_clear_session():
-    resp = client.delete(f"/session/{SESSION_ID}")
+    resp = client.delete(f"/session/{USER_ID}/{SESSION_ID}")
     assert resp.status_code == 200
     assert SESSION_ID in resp.json()["message"]

@@ -1,1 +1,3 @@
 from .conversation_memory import session_memory_manager
+from .long_term_memory import long_term_memory_manager
+from .redis_client import RedisClient

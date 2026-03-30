@@ -32,7 +32,7 @@ def _request_reject(query: str, trace_id: str) -> str:
     except Exception as e:
         elapsed = (time.time() - start_time) * 1000
         logger.error(f"call reject failed: {e}，耗时：{elapsed:.2f}ms")
-        text = "是"
+        text = 0
     return text
 
 
@@ -49,7 +49,7 @@ class RejectAgent:
         trace_id = str(uuid.uuid4())
         text = _request_reject(query, trace_id)
 
-        if text.strip() == "是":
+        if text == 0:
             return RejectResult(action="REJECT")
         return RejectResult(action="PASS")
 

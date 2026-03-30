@@ -5,12 +5,12 @@ Orchestrator Agent —— 主控 ReAct Agent
 """
 from typing import AsyncGenerator, Dict, Any
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 
 from config import llm_config
-from memory import session_memory_manager
+from memory import session_memory_manager, long_term_memory_manager
 from tools import ALL_TOOLS
 from .reject_agent import reject_agent
 
@@ -45,23 +45,38 @@ class OrchestratorAgent:
             prompt=SYSTEM_PROMPT,
         )
 
-    def run(self, session_id: str, query: str) -> str:
+    def _build_messages(self, user_id: str, session_id: str, query: str):
+        """构建消息列表：长期记忆上下文 + 短期历史 + 当前问题"""
+        messages = []
+        ltm_context = long_term_memory_manager.get_context(user_id)
+        if ltm_context:
+            messages.append(SystemMessage(content=f"以下是该用户的历史偏好与会话摘要，供参考：\n{ltm_context}"))
+        messages.extend(session_memory_manager.get_history_messages(user_id, session_id))
+        messages.append(HumanMessage(content=query))
+        return messages
+
+    def close_session(self, user_id: str, session_id: str) -> None:
+        """会话结束：将短期记忆摘要写入长期记忆，然后清除短期记忆。"""
+        messages = session_memory_manager.get_history_messages(user_id, session_id)
+        long_term_memory_manager.save_session(user_id, messages, self.llm)
+        session_memory_manager.clear(user_id, session_id)
+
+    def run(self, user_id: str, session_id: str, query: str) -> str:
         """同步运行，返回最终答案字符串"""
         # ① 拒识检查
         reject_result = reject_agent.check(query)
         if reject_result.action == "REJECT":
             return reject_agent.get_reject_message()
 
-        # ② 构建消息列表（历史 + 当前问题）
-        messages = session_memory_manager.get_history_messages(session_id)
-        messages.append(HumanMessage(content=query))
+        # ② 构建消息列表（长期记忆上下文 + 短期历史 + 当前问题）
+        messages = self._build_messages(user_id, session_id, query)
 
         # ③ 执行 ReAct 循环
         result = self._agent.invoke({"messages": messages})
         answer = result["messages"][-1].content
 
         # ④ 保存本轮对话到短期记忆
-        session_memory_manager.save_turn(session_id, query, answer)
+        session_memory_manager.save_turn(user_id, session_id, query, answer)
 
         return answer
 
@@ -73,9 +88,8 @@ class OrchestratorAgent:
             yield {"type": "final_answer", "content": reject_agent.get_reject_message()}
             return
 
-        # ② 构建消息列表
-        messages = session_memory_manager.get_history_messages(session_id)
-        messages.append(HumanMessage(content=query))
+        # ② 构建消息列表（长期记忆上下文 + 短期历史 + 当前问题）
+        messages = self._build_messages(user_id, session_id, query)
 
         full_answer = ""
 
@@ -109,7 +123,7 @@ class OrchestratorAgent:
 
         # ④ 保存本轮对话
         if full_answer:
-            session_memory_manager.save_turn(session_id, query, full_answer)
+            session_memory_manager.save_turn(user_id, session_id, query, full_answer)
             yield {"type": "done", "content": full_answer}
 
 
