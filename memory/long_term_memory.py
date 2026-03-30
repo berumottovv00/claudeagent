@@ -65,6 +65,8 @@ class LongTermMemoryManager:
             except Exception as e:
                 logger.warning(f"语义记忆召回失败，降级忽略：{e}")
 
+        semantic_summaries = [s for s in semantic_summaries if s not in summaries]
+
         parts = []
         if preferences:
             parts.append(f"用户偏好：{preferences}")
