@@ -48,7 +48,7 @@ class OrchestratorAgent:
     def _build_messages(self, user_id: str, session_id: str, query: str):
         """构建消息列表：长期记忆上下文 + 短期历史 + 当前问题"""
         messages = []
-        ltm_context = long_term_memory_manager.get_context(user_id)
+        ltm_context = long_term_memory_manager.get_context(user_id, query)
         if ltm_context:
             messages.append(SystemMessage(content=f"以下是该用户的历史偏好与会话摘要，供参考：\n{ltm_context}"))
         messages.extend(session_memory_manager.get_history_messages(user_id, session_id))

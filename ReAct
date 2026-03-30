@@ -1,0 +1,83 @@
+## 整体架构
+
+```
+invoke()
+  └─ stream() [Pregel 执行引擎]
+       └─ 循环执行节点，直到到达 END
+```
+
+图在 `create_react_agent` 时就已编译好，有两个节点和条件边：
+
+```
+entry → [agent] → should_continue?
+                    ├─ 无 tool_calls → END
+                    └─ 有 tool_calls → [tools] → route_tool_responses?
+                                                    ├─ return_direct=True → END
+                                                    └─ 否则 → [agent]（循环）
+```
+
+---
+
+## 逐步执行
+
+**1. `[agent]` 节点 — 调用 LLM**
+
+```python
+# chat_agent_executor.py
+call_model(state, config)
+  → 组装 messages（含 system prompt）
+  → llm_with_tools.invoke(messages)  # LLM 带工具定义
+  → 返回 AIMessage
+```
+
+AIMessage 有两种情况：
+- 有 `tool_calls` 字段 → 继续循环
+- 无 `tool_calls` → 这就是最终答案，走向 END
+
+**2. `should_continue` — 路由判断**
+
+```python
+# v2 模式（你们用的）
+if not last_message.tool_calls:
+    return END
+else:
+    return [Send("tools", ToolCallWithContext(...)) for call in tool_calls]
+    # 每个 tool call 独立 Send，支持并行执行
+```
+
+**3. `[tools]` 节点 — 执行工具**
+
+```python
+# tool_node.py
+with get_executor_for_config(config) as executor:
+    outputs = list(executor.map(self._run_one, tool_calls))
+# 并行调用所有工具，返回 [ToolMessage, ToolMessage, ...]
+# ToolMessage 追加到 state["messages"]
+```
+
+**4. `route_tool_responses` — 决定是否继续**
+
+```python
+if tool.return_direct:
+    return END       # 直接返回工具结果
+else:
+    return "agent"   # 带着 ToolMessage 再次进入 agent 节点
+```
+
+---
+
+## 终止条件
+
+| 条件 | 说明 |
+|------|------|
+| LLM 不再产生 tool_calls | 主要终止路径 |
+| 工具设置了 `return_direct=True` | 跳过 LLM，直接返回工具结果 |
+| `remaining_steps < 2` | 步数耗尽，返回兜底提示 |
+
+---
+
+## 源码位置
+
+- ReAct 图构建：`site-packages/langgraph/prebuilt/chat_agent_executor.py`
+- 工具节点：`site-packages/langgraph/prebuilt/tool_node.py`
+- 图执行引擎：`site-packages/langgraph/pregel/main.py`
