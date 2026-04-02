@@ -53,3 +53,29 @@ class RedisClient:
 
     def pipeline(self):
         return self._conn.pipeline()
+
+    # ── Sorted Set ──
+    def zadd(self, name, mapping: dict):
+        return self._conn.zadd(name, mapping)
+
+    def zrange(self, name, start, end, withscores=False):
+        return self._conn.zrange(name, start, end, withscores=withscores)
+
+    def zcard(self, name):
+        return self._conn.zcard(name)
+
+    def zrem(self, name, *values):
+        return self._conn.zrem(name, *values)
+
+    # ── Hash ──
+    def hget(self, name, key):
+        return self._conn.hget(name, key)
+
+    def hset(self, name, key, value):
+        return self._conn.hset(name, key, value)
+
+    def hdel(self, name, *keys):
+        return self._conn.hdel(name, *keys)
+
+    def hincrby(self, name, key, amount=1):
+        return self._conn.hincrby(name, key, amount)

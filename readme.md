@@ -79,8 +79,10 @@ rag_query  get_weather   get_navigation  navigate      recommend
 ```
 请求进入
   │
-  ├─① 读取长期记忆（Redis，按 user_id）
-  │      └─ 拼入 system prompt 作为用户背景上下文
+  ├─① 读取长期记忆（Redis + Milvus，按 user_id）
+  │      ├─ Redis：结构化偏好事实 + 重要性最高的 5 条摘要
+  │      └─ Milvus：按当前 query 语义召回相关历史摘要
+  │      （合并后拼入 system prompt）
   │
   ├─② 读取短期记忆（进程内 deque，按 user_id:session_id）
   │      └─ 拼入历史对话消息列表
@@ -90,7 +92,9 @@ rag_query  get_weather   get_navigation  navigate      recommend
   ├─④ 保存本轮到短期记忆
   │
   └─⑤ 会话结束时
-         └─ LLM 对短期记忆做摘要压缩 → 追加写入 Redis 长期记忆
+         ├─ LLM 提取偏好 + 摘要
+         ├─ 偏好：与历史偏好合并（冲突消解）→ 写入 Redis
+         └─ 摘要：写入 Redis Sorted Set + Milvus 向量库
 ```
 
 ### 短期记忆
@@ -107,20 +111,24 @@ rag_query  get_weather   get_navigation  navigate      recommend
 
 | 项 | 说明 |
 |---|---|
-| 存储 | Redis（Hash + List 结构） |
-| Key | `ltm:{user_id}` |
-| 内容 | 用户偏好摘要、历史会话摘要列表 |
-| 写入时机 | 会话结束时，由 LLM 对短期记忆压缩摘要后追加写入 |
-| 读取时机 | 每次对话开始前拉取，拼入 system prompt |
-| TTL | 默认 30 天，可配置 |
-| 生命周期 | 跨会话、跨进程持久化 |
+| 存储 | Redis（偏好 + 摘要索引）+ Milvus（摘要向量） |
+| 偏好格式 | 结构化 JSON，每条含 `content` + `confidence`（1-10） |
+| 偏好冲突消解 | LLM 合并新旧偏好：一致→置信度+1，矛盾→保留高置信，置信度≤2 自动遗忘 |
+| 摘要存储 | Redis Sorted Set（score=时间戳）+ Milvus 向量（含 `created_at`） |
+| 遗忘策略 | 容量超限时按 `0.7×时效衰减 + 0.3×访问频率` 淘汰，而非纯 FIFO |
+| 向量去重 | 插入 Milvus 前检测近重复（相似度>0.95），命中则替换旧向量 |
+| 数据一致性 | 淘汰 Redis 摘要时同步删除对应 Milvus 向量（通过 ID 映射） |
+| TTL | 默认 30 天，可配置；Milvus 支持按 `created_at` 批量清理 |
 
 ### Redis 数据结构
 
 ```
 ltm:{user_id}
-  ├── preferences  (String) 用户偏好摘要，每次会话后覆盖更新
-  └── summaries    (List)   历史会话摘要列表，每次会话后 LPUSH，保留最近 N 条
+  ├── preferences  (String/JSON) 结构化偏好事实列表
+  │     示例：{"facts": [{"content": "偏好SUV", "confidence": 8}, ...]}
+  ├── summaries    (Sorted Set)  历史会话摘要，score = 写入时间戳
+  ├── sum_access   (Hash)        md5(摘要) → 语义召回次数（用于重要性计算）
+  └── sum_ids      (Hash)        md5(摘要) → Milvus 主键 ID（用于联动删除）
 ```
 
 ### 分层对比
@@ -128,7 +136,8 @@ ltm:{user_id}
 | 层次 | 实现 | Key | 写入 | 清除 | 持久化 |
 |---|---|---|---|---|---|
 | 短期记忆 | 进程内 deque | `user_id:session_id` | 每轮对话后 | 会话结束 / 重启 | 否 |
-| 长期记忆 | Redis | `ltm:{user_id}` | 会话结束摘要压缩后 | TTL 到期 | 是 |
+| 长期记忆（索引） | Redis Sorted Set + Hash | `ltm:{user_id}:*` | 会话结束后 | TTL 到期 / 重要性淘汰 | 是 |
+| 长期记忆（向量） | Milvus `ltm_summaries` | — | 会话结束后 | 联动删除 / TTL 清理 | 是 |
 | 知识库 | Milvus（RAG 微服务侧） | — | 离线导入 | 手动 | 是 |
 
 ---
@@ -156,7 +165,9 @@ ltm:{user_id}
 │   └── settings.py                  # LLM / RAG / MCP 配置
 ├── memory/
 │   ├── conversation_memory.py       # 短期记忆：多 session 滑动窗口（进程内 deque）
-│   └── long_term_memory.py          # 长期记忆：Redis 会话摘要 + 用户偏好持久化
+│   ├── long_term_memory.py          # 长期记忆：偏好冲突消解 + 重要性遗忘 + Milvus 联动
+│   ├── milvus_client.py             # Milvus 向量库客户端（摘要向量存储、去重、TTL 清理）
+│   └── redis_client.py              # Redis 连接池客户端
 ├── agents/
 │   ├── orchestrator_agent.py        # 主控 ReAct Agent
 │   ├── reject_agent.py              # 拒识 Agent（接口预留）

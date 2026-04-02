@@ -49,15 +49,18 @@ class OrchestratorAgent:
         """构建消息列表：长期记忆上下文 + 短期历史 + 当前问题"""
         messages = []
         ltm_context = long_term_memory_manager.get_context(user_id, query)
+        system_parts = [f"当前用户 ID：{user_id}"]
         if ltm_context:
-            messages.append(SystemMessage(content=f"以下是该用户的历史偏好与会话摘要，供参考：\n{ltm_context}"))
+            system_parts.append(f"以下是该用户的历史偏好与会话摘要，供参考：\n{ltm_context}")
+        messages.append(SystemMessage(content="\n".join(system_parts)))
+        # human message直接
         messages.extend(session_memory_manager.get_history_messages(user_id, session_id))
         messages.append(HumanMessage(content=query))
         return messages
 
     def close_session(self, user_id: str, session_id: str) -> None:
         """会话结束：将短期记忆摘要写入长期记忆，然后清除短期记忆。"""
-        messages = session_memory_manager.get_history_messages(user_id, session_id)
+        messages = session_memory_manager.get_full_history(user_id, session_id)
         long_term_memory_manager.save_session(user_id, messages, self.llm)
         session_memory_manager.clear(user_id, session_id)
 

@@ -18,15 +18,14 @@ def navigate(query: str) -> str:
 
 
 @tool
-def recommend(query: str, session_id: str = "default") -> str:
+def recommend(query: str, user_id: str = "default") -> str:
     """个性化推荐工具：根据用户偏好和当前情境（位置、时间、天气）推荐附近地点或活动。
     当用户询问"去哪吃饭"、"附近有什么好玩的"、"推荐一下"等个性化推荐需求时使用。
-    输入：用户的推荐需求描述（含位置、偏好、场景等信息）。
+    输入：用户的推荐需求描述（含位置、偏好、场景等信息），以及 user_id（用于读取历史偏好）。
     输出：2-3 个个性化推荐，附带推荐理由。
     """
     from agents.recommendation_agent import recommendation_agent
-    # 将 session_id 拼入 query，让 sub agent 能获取用户历史偏好
-    full_query = f"{query}\n[session_id: {session_id}]"
+    full_query = f"{query}\n[user_id: {user_id}]"
     return recommendation_agent.run(full_query)
 
 
