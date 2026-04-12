@@ -44,6 +44,8 @@ class OrchestratorAgent:
             tools=self.tools,
             prompt=SYSTEM_PROMPT,
         )
+        # 注入增量 flush 回调，字符数超限时后台异步触发
+        session_memory_manager._flush_callback = self._do_incremental_flush
 
     def _build_messages(self, user_id: str, session_id: str, query: str):
         """构建消息列表：长期记忆上下文 + 短期历史 + 当前问题"""
@@ -58,10 +60,20 @@ class OrchestratorAgent:
         messages.append(HumanMessage(content=query))
         return messages
 
+    def _do_incremental_flush(self, user_id: str, session_id: str) -> None:
+        """字符数超限时触发，将当前全部历史写入长期记忆并清空。"""
+        n = len(session_memory_manager._sessions.get(
+            session_memory_manager._key(user_id, session_id), []
+        ))
+        messages = session_memory_manager.get_and_clear_oldest(user_id, session_id, n)
+        if messages:
+            long_term_memory_manager.save_session(user_id, messages, self.llm)
+
     def close_session(self, user_id: str, session_id: str) -> None:
-        """会话结束：将短期记忆摘要写入长期记忆，然后清除短期记忆。"""
+        """会话结束：将剩余未摘要轮次写入长期记忆，然后清除短期记忆。"""
         messages = session_memory_manager.get_full_history(user_id, session_id)
-        long_term_memory_manager.save_session(user_id, messages, self.llm)
+        if messages:
+            long_term_memory_manager.save_session(user_id, messages, self.llm)
         session_memory_manager.clear(user_id, session_id)
 
     def run(self, user_id: str, session_id: str, query: str) -> str:
